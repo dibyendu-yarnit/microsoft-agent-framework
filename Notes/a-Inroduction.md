@@ -1389,9 +1389,17 @@ async def token_counting_middleware(
 
 ### 5.4 Agent & Run Scope
 
+**Simple explanation:** Think of it like rules at two levels — house rules vs. room rules.
+* **Agent-level middleware** = house rules. They apply every time anyone runs this agent, no matter what. Example: "always log every request."
+
+* **Run-level middleware** = room rules. They apply only for one specific agent.run() call. Example: "for this one API request from user Alice, tag all logs with her user ID."
+
+**Real-world analogy:** Imagine a hotel. Every guest gets towels (agent-level — always happens). But a VIP guest gets a fruit basket delivered specifically for their stay (run-level — only for that one check-in).
+
+
 **Description**: Middleware can be scoped to the **agent level** (applies to all runs of this agent) or **run level** (applies only to a specific `agent.run()` call). Run-level middleware is useful for per-request context like user ID, request ID, or custom logging.
 
-**Example**:
+**Example 01**:
 
 ```python
 import asyncio
@@ -1423,6 +1431,26 @@ async def main():
     print(result)
 
 asyncio.run(main())
+```
+
+**Example 02:**
+
+```python
+    # Agent-level: fires on EVERY run of this agent
+    agent = Agent(
+        client=client,
+        instructions="You are a helpful assistant.",
+        chat_middleware=[always_log_middleware],  # ← always active
+    )
+
+    # Run-level: fires ONLY for this one specific call
+    result = await agent.run(
+        "Help me write an email.",
+        options=RunOptions(
+            chat_middleware=[tag_with_user_id_middleware],  # ← only for THIS call
+            run_context={"user_id": "alice_42"}
+        )
+    )
 ```
 
 ---
@@ -1521,9 +1549,15 @@ async def error_handling_middleware(context, next):
 
 ### 5.8 Shared State
 
+**Simple explanation:** Shared State is a sticky note board that all middleware in a single run can write to and read from — without touching the actual conversation messages.
+
+Without it, if Middleware A measures something (like start time), it cannot pass that to Middleware B without hacking the conversation. Shared State solves this cleanly.
+
+**Real-world analogy:** Think of airport check-in. The ticketing agent writes your bag weight on a paper slip. Security reads that same slip. The boarding agent reads it again. None of them need to ask you (the conversation) — they pass information to each other via the slip (shared state).
+
 **Description**: Shared State allows **multiple middleware handlers to share data** within a single agent run, without polluting the agent's conversation context. Think of it as a request-scoped blackboard.
 
-**Example**:
+**Example 01**:
 
 ```python
 async def timing_start_middleware(context, next):
@@ -1541,9 +1575,33 @@ async def timing_end_middleware(context, next):
     print(f"Run completed in {elapsed:.2f}s | Token budget: {budget}")
 ```
 
+**Example 02:**
+```python
+    async def start_timer_middleware(context, next):
+    # Middleware A writes to the shared board
+        context.shared_state["start_time"] = time.monotonic()
+        context.shared_state["user_tier"] = "premium"
+        await next(context)
+
+    async def end_timer_middleware(context, next):
+        await next(context)
+        # Middleware B reads from the same board
+        elapsed = time.monotonic() - context.shared_state["start_time"]
+        tier = context.shared_state["user_tier"]
+        print(f"[{tier}] Request took {elapsed:.2f}s")
+```
+
+Both middlewares share data (`start_time`, `user_tier`) without putting any of it into the chat messages the user sees.
 ---
 
 ### 5.9 Running Context
+
+**Simple explanation:** Running Context is like a name badge that the agent wears for a single run. It carries metadata about who is making this call and why — things like user ID, request ID, feature flags. Every middleware can read the badge, but it never appears in the conversation.
+
+**Real-world analogy:** When a doctor sees a patient, the nurse hands the doctor a clipboard with the patient's name, insurance, and visit reason. The doctor doesn't ask the patient all of that again mid-conversation — they just read the clipboard. Running Context is that clipboard.
+
+**Key difference from Shared State:** Running Context is set before the run starts by the caller. Shared State is written during the run by middleware. Running Context = inputs. Shared State = working notes passed between middleware mid-run.
+
 
 **Description**: Running Context is a **per-run metadata container** that flows through the entire middleware chain. It carries request-scoped information: user ID, request ID, feature flags, A/B test group assignments.
 
@@ -1572,6 +1630,42 @@ async def main():
     )
     print(result)
 ```
+
+**Example 02:**
+```python
+    result = await agent.run(
+        "Suggest a product for me.",
+        options=RunOptions(
+            run_context={
+                "user_id": "usr_alice_42",       # Who is calling
+                "request_id": "req_20260512",    # Audit trail ID
+                "ab_test_group": "B",            # A/B testing
+                "feature_flags": {
+                    "show_premium_offers": True  # Feature toggle
+                },
+            }
+        )
+    )
+
+    # Any middleware can read this without touching the conversation
+    async def ab_test_middleware(context, next):
+        group = context.run_context.get("ab_test_group", "A")
+        if group == "B":
+            print("Using variant B response style")
+        await next(context)
+```
+
+
+**How They Relate — One-Line Summary Each**
+
+| Concept | What it is | Set by | Read by |
+|---|---|---|---|
+| **Agent Scope** | Always-on middleware for all runs | Developer at agent setup | Every run |
+| **Run Scope** | One-time middleware for a single call | Caller at `agent.run()` | That run only |
+| **Shared State** | Working notepad between middlewares in one run | Any middleware during the run | Other middlewares |
+| **Running Context** | Metadata clipboard about the caller | Caller before the run starts | All middlewares |
+
+The simplest mental model: **Running Context** is what you bring *into* the run. **Shared State** is what middleware *creates and passes around* during the run. **Scope** controls *which* middleware even participates.
 
 ---
 
