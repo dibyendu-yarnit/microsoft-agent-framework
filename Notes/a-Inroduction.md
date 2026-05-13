@@ -779,18 +779,142 @@ skills/
 
 ### 2.10 CodeAct
 
-**Description**: CodeAct is a **pattern that collapses multi-step tool-call chains into a single executable Python code block**. Instead of: LLM picks tool → tool runs → LLM picks next tool → ... (5 model turns), CodeAct does: LLM writes a Python script that calls all tools via `call_tool()` → script runs once in sandbox → result returned (1 model turn).
+## CodeAct — Plain English, No Code
 
-**Performance Impact**: 
-- ~50% latency reduction
-- >60% token usage reduction on chained tool workloads
+---
 
-**When to Use CodeAct**:
-- ✅ Data wrangling with multiple tool calls
-- ✅ Chained lookups (query → process → query again)
-- ✅ Report generation from multiple data sources
-- ❌ Single-step tasks (overkill)
-- ❌ Tasks needing human approval between steps
+#### The Problem It Solves
+
+Imagine you ask an agent to do this:
+
+> *"Get the sales data for Q1, compare it to Q4, calculate the growth percentage, then format it as a summary report."*
+
+That is **four separate jobs chained together**. Each job depends on the result of the previous one.
+
+---
+
+#### How a Normal Agent Handles This (The Slow Way)
+
+Without CodeAct, the agent works like a person who can only do **one thing at a time** and has to check in with their manager after every single step:
+
+```
+Step 1: Agent thinks → "I need Q1 sales" → fetches Q1 data → stops, reports back
+Step 2: Agent thinks → "Now I need Q4 sales" → fetches Q4 data → stops, reports back
+Step 3: Agent thinks → "Now calculate growth" → runs calculation → stops, reports back
+Step 4: Agent thinks → "Now format the report" → formats it → stops, reports back
+Step 5: Agent thinks → "Done" → returns final answer
+```
+
+**Every single "stop and report back" = one full round trip to the LLM.**
+
+That means 5 separate API calls, 5 waits, and the full conversation history is re-sent to the model every single time. This is slow and expensive.
+
+---
+
+#### How CodeAct Handles This (The Smart Way)
+
+CodeAct works like a manager who, instead of checking in after every step, **writes the full plan on paper first**, hands it to an assistant, and says *"Execute all of this, come back when it's done."*
+
+```
+Step 1: Agent thinks once → writes a complete plan covering all 4 jobs
+        → hands the plan to a safe execution environment
+        → execution environment runs all 4 jobs in sequence
+        → brings back the final result
+Step 2: Done.
+```
+
+**One LLM call. One wait. One result.**
+
+The plan the agent writes is a small Python script — but you do not need to think of it as "code." Think of it as a **structured to-do list** that a machine can execute automatically, where each item on the list is a tool call and the output of one item flows automatically into the next.
+
+---
+
+#### The Sandbox — Why It Is Safe
+
+When CodeAct runs the plan, it runs it inside a **completely isolated sandbox** — a sealed, temporary box that:
+
+- Has **no access** to your real file system
+- Has **no access** to your actual database
+- Has **no access** to the internet directly
+- Can **only call the tools you explicitly registered**
+- Gets **destroyed** after the run finishes
+
+Think of it like a locked testing room where a temp worker executes your instructions. They can use the tools you left in the room. They cannot walk out and touch anything else in your building.
+
+---
+
+#### The Performance Numbers — What They Actually Mean
+
+**~50% latency reduction**
+
+If a chained task used to take 12 seconds (because the agent was making 5 separate round trips to the LLM), it now takes around 6 seconds. The time saved is all the waiting between steps — those gaps are simply eliminated.
+
+**~60% token reduction**
+
+Every time a normal agent makes a new LLM call, it resends the entire conversation history as context — every message, every tool result so far. On a 5-step chain, that history gets sent 5 times. CodeAct sends it once. The savings are not just about fewer calls — they compound because the history grows with each step, making later calls increasingly expensive.
+
+---
+
+#### When to USE CodeAct ✅
+
+---
+
+**✅ Data wrangling with multiple tool calls**
+
+This is the ideal scenario. You need to pull data from several places, process it, and combine it into something useful. Each step feeds the next. Without CodeAct, every step is a separate LLM call. With CodeAct, the agent writes the entire sequence upfront and runs it in one shot.
+
+Real example: *"Pull last month's orders from Shopify, filter for returns only, calculate the total refund amount, and group by product category."* — That is four chained operations. Perfect for CodeAct.
+
+---
+
+**✅ Chained lookups (query → process → query again)**
+
+This is when the result of one lookup determines what you look up next. The agent cannot know what to ask for in step 2 until it has seen the answer from step 1.
+
+Real example: *"Find the customer who placed order #5892, then look up all their previous orders, then find the most expensive item they ever bought."* — Step 2 needs the customer ID from step 1. Step 3 needs the order list from step 2. CodeAct handles this dependency chain naturally because the plan is written as a flowing sequence where outputs feed directly into inputs.
+
+---
+
+**✅ Report generation from multiple data sources**
+
+When a report needs data from 3 or 4 different sources — say, Shopify for sales, Google Analytics for traffic, and a spreadsheet for ad spend — a normal agent would make a separate LLM call for each source. CodeAct pulls all of them in one execution run, combines them, and formats the report without ever going back to the LLM between steps.
+
+Real example: *"Generate an executive summary combining this week's sales, top traffic sources, and ad spend ROI."* — Three data sources, one execution, one result.
+
+---
+
+#### When NOT to Use CodeAct ❌
+
+---
+
+**❌ Single-step tasks — it is overkill**
+
+If someone asks *"What is the weather in London right now?"* — that is one tool call. There is nothing to chain. Using CodeAct here is like hiring a project manager to make you a cup of tea. The overhead of setting up the plan, running the sandbox, and returning the result adds complexity with zero benefit.
+
+The rule of thumb: **if the task only needs one tool call, use the tool directly.**
+
+---
+
+**❌ Tasks needing human approval between steps**
+
+This is the most important limitation to understand.
+
+CodeAct runs the entire plan **non-stop, start to finish**, inside the sandbox. It cannot pause in the middle, surface an intermediate result to a human, wait for their decision, and then continue. The whole point of CodeAct is that it runs as one uninterrupted execution.
+
+So if your workflow looks like this:
+
+> Draft email → **Human reviews and approves** → Send email
+
+CodeAct **cannot** handle this. The moment it drafts the email, it would immediately move to sending it — because that is the next step in the plan and there is no mechanism to pause and wait.
+
+For any workflow that has a mandatory human checkpoint between steps — approval gates, review steps, compliance sign-offs — you need a regular workflow with built-in Human-in-the-Loop (HITL) support instead. Those workflows are specifically designed to pause, notify a human, and resume only when cleared.
+
+---
+
+#### The One-Paragraph Summary
+
+CodeAct is the agent equivalent of handing someone a complete to-do list instead of texting them one instruction at a time and waiting for them to reply before sending the next one. The agent writes the full plan in one go — covering every tool it needs to call, in what order, passing results from one step to the next — hands it to a safe execution sandbox, and gets back the final answer without any further back-and-forth with the LLM. It is best suited for chained, multi-step data tasks where each step feeds the next. It is the wrong choice for anything simple enough to need just one tool call, or anything that requires a human to review and approve an intermediate result before the work continues.
+
 
 **Example**:
 
