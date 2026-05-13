@@ -2224,6 +2224,11 @@ MAF ships with **5 built-in orchestration patterns**:
 
 **Description**: Agents execute **one after another** in a fixed linear chain. Output of each agent becomes input for the next. Simple, predictable, easy to debug.
 
+Agents work one after another, like an assembly line. Agent A finishes completely, hands its output to Agent B, B finishes, hands to Agent C. No agent starts until the previous one is done.
+
+**Real-world analogy:** Think of a restaurant kitchen. The chef cooks the dish first. Only when it is plated does the waiter pick it up. Only when the waiter delivers it does the cashier generate the bill. Each person waits for the previous person to finish before they start their part.
+
+
 ```python
 import asyncio
 from agent_framework import Agent
@@ -2261,9 +2266,36 @@ async def main():
 asyncio.run(main())
 ```
 
+**How it works step by step:**
+```markdown
+    User Input → [Planner Agent] → output passed as input →
+    [Estimator Agent] → output passed as input →
+    [Risk Analyzer Agent] → Final Result
+```
+1. The user gives one task to the workflow
+2. The Planner receives it, thinks, produces a plan
+3. That plan is automatically handed to the Estimator
+4. The Estimator produces time and cost estimates
+5. Those estimates are automatically handed to the Risk Analyzer
+6. The Risk Analyzer produces the final risk assessment
+7. You get all three outputs in sequence
+
+
+**When to use it:**
+Use Sequential when each agent's work genuinely depends on what the previous agent produced. When the order matters. When you need a clear, auditable chain of steps where each step builds on the last. Best for pipelines like: research → write → review → publish, or plan → estimate → approve.
+
+**When NOT to use it:**
+Do not use Sequential if the agents do not depend on each other's output. Running three independent analysts sequentially when they could all work at the same time is just wasting time.
+
+
 #### Concurrent Orchestration
 
 **Description**: All agents **execute simultaneously** on the same input, in parallel. Results are collected when all complete. Use when agents are independent and can work in parallel.
+
+All agents receive the same input and work simultaneously, in parallel. Nobody waits for anyone else. Results are collected when everyone finishes.
+
+**Real-world analogy:** Think of a panel of judges at a talent show. All three judges watch the same performance at the same time. Each forms their own independent opinion. Once everyone has finished scoring, all scores are collected and compared. No judge waits for another to finish before making up their mind.
+
 
 ```python
 import asyncio
@@ -2299,149 +2331,271 @@ async def main():
 asyncio.run(main())
 ```
 
+**How it works step by step:**
+```markdown
+    → [Technical Analyst] → result ─┐
+    User Input ────────→ [Market Analyst]    → result ──┼→ All results collected
+                        → [Financial Analyst] → result ─┘
+```
+
+1. The user gives one task to the workflow
+2. All three agents receive the exact same input simultaneously
+3. Each agent works completely independently of the others
+4. All three run at the same time — the wall clock time is only as long as the slowest agent
+5. Results are collected from all three and returned together
+
+**When to use it**
+Use Concurrent when agents are completely independent of each other — meaning Agent A's answer does not affect what Agent B needs to do. Best for multi-perspective analysis, parallel research, or any situation where you need several viewpoints on the same question at the same time. Dramatically faster than running the same agents sequentially.
+
+**When NOT to use it:**
+Do not use Concurrent if Agent B needs to see Agent A's output before it can do its job. If there is a dependency between agents, use Sequential instead.
+
+
 #### Handoff Orchestration
 
 **Description**: Agents **hand off control** to other agents based on their own reasoning. The active agent decides which specialist to transfer to next. Enables dynamic routing through a graph of specialized agents.
 
+One agent acts as a receptionist who decides which specialist to send you to. Once you are passed to that specialist, they handle your request. Agents hand control to each other dynamically based on what they understand about the situation.
+
+**Real-world analogy:** Think of calling a company's customer service line. The first person who picks up is not a specialist — they listen to your problem and decide whether to transfer you to billing, technical support, returns, or sales. Once they transfer you, the specialist takes over completely. The routing decision is made based on what you say, not by a fixed rule set upfront.
+
 ```python
-import asyncio
-from agent_framework import Agent
-from agent_framework.openai import OpenAIChatClient
-from agent_framework.orchestrations import HandoffBuilder
+    import asyncio
+    from agent_framework import Agent
+    from agent_framework.openai import OpenAIChatClient
+    from agent_framework.orchestrations import HandoffBuilder
 
-async def main():
-    client = OpenAIChatClient()
+    async def main():
+        client = OpenAIChatClient()
 
-    # Customer service specialist agents
-    triage_agent = Agent(client=client, name="triage",
-        instructions="""
-        You are a customer service triage agent. 
-        Route to: 'orders' for order issues, 'returns' for return requests,
-        'technical' for product technical problems, 'billing' for payment issues.
-        """)
-    
-    orders_agent = Agent(client=client, name="orders",
-        instructions="You handle order status, shipping, and delivery inquiries.")
-    
-    returns_agent = Agent(client=client, name="returns",
-        instructions="You handle return requests, refunds, and exchange policies.")
-    
-    technical_agent = Agent(client=client, name="technical",
-        instructions="You handle technical product support and troubleshooting.")
-    
-    billing_agent = Agent(client=client, name="billing",
-        instructions="You handle billing disputes, payments, and subscription changes.")
+        # Customer service specialist agents
+        triage_agent = Agent(client=client, name="triage",
+            instructions="""
+            You are a customer service triage agent. 
+            Route to: 'orders' for order issues, 'returns' for return requests,
+            'technical' for product technical problems, 'billing' for payment issues.
+            """)
+        
+        orders_agent = Agent(client=client, name="orders",
+            instructions="You handle order status, shipping, and delivery inquiries.")
+        
+        returns_agent = Agent(client=client, name="returns",
+            instructions="You handle return requests, refunds, and exchange policies.")
+        
+        technical_agent = Agent(client=client, name="technical",
+            instructions="You handle technical product support and troubleshooting.")
+        
+        billing_agent = Agent(client=client, name="billing",
+            instructions="You handle billing disputes, payments, and subscription changes.")
 
-    # Build handoff topology
-    workflow = (
-        HandoffBuilder(participants=[triage_agent, orders_agent, returns_agent, technical_agent, billing_agent])
-        .with_start_agent(triage_agent)
-        .add_handoff(triage_agent, [orders_agent, returns_agent, technical_agent, billing_agent])
-        .add_handoff(returns_agent, [billing_agent], description="Suspected refund fraud")
-        .build()
-    )
+        # Build handoff topology
+        workflow = (
+            HandoffBuilder(participants=[triage_agent, orders_agent, returns_agent, technical_agent, billing_agent])
+            .with_start_agent(triage_agent)
+            .add_handoff(triage_agent, [orders_agent, returns_agent, technical_agent, billing_agent])
+            .add_handoff(returns_agent, [billing_agent], description="Suspected refund fraud")
+            .build()
+        )
 
-    # Triage automatically routes to the right specialist
-    print("Test 1: Order inquiry")
-    result = await workflow.run("Where is my order #98765? It's been 2 weeks!")
-    print(result)
+        # Triage automatically routes to the right specialist
+        print("Test 1: Order inquiry")
+        result = await workflow.run("Where is my order #98765? It's been 2 weeks!")
+        print(result)
 
-    print("\nTest 2: Technical problem")
-    result = await workflow.run("My device won't turn on after the latest firmware update.")
-    print(result)
+        print("\nTest 2: Technical problem")
+        result = await workflow.run("My device won't turn on after the latest firmware update.")
+        print(result)
 
-asyncio.run(main())
+    asyncio.run(main())
 ```
+
+**How it works step by step:**
+```markdown
+    User Input → [Triage Agent]
+                 │
+                 ├── "order problem?" → [Orders Agent] → Final Answer
+                 ├── "return request?" → [Returns Agent] → Final Answer
+                 ├── "technical issue?" → [Technical Agent] → Final Answer
+                 └── "billing problem?" → [Billing Agent] → Final Answer
+```
+
+1. Every request starts at the Triage Agent
+2. The Triage Agent reads the request and decides which specialist is the right fit
+3. Control is handed off to that specialist
+4. The specialist handles the request fully and returns the answer
+5. Specialist agents can also hand off to other specialists if needed (e.g. Returns hands fraud cases to Billing)
+
+
+**When to use it:**
+Use Handoff when you have one entry point but many possible paths through your system — like customer service, help desks, intake forms, or any domain where different types of requests need different types of expertise. The routing decision is intelligent and context-aware, not a simple if/else rule.
+
+**When NOT to use it:**
+Do not use Handoff when every request goes through the same agents every time. If the path is always the same, Sequential is simpler and more predictable.
+
 
 #### Group Chat Orchestration
 
 **Description**: A **manager agent coordinates multiple specialist agents** in a collaborative discussion. The manager selects who speaks next, agents build on each other's responses, and all share the same conversation history.
 
+Multiple agents have a collaborative conversation with each other, all sharing the same chat history. A manager decides who speaks next. Agents can read what others have said and build on it, disagree with it, or refine it — just like a real team meeting.
+
+**Real-world analogy:** Think of a product design workshop. A developer, a designer, and a business analyst sit in the same room. The facilitator calls on each person in turn. The developer proposes a technical solution. The designer hears it and suggests a UX improvement. The business analyst hears both and adds a cost consideration. Everyone's contribution is shaped by what the others already said. The conversation builds collectively toward a better outcome than any one person could reach alone.
+
+
 ```python
-import asyncio
-from agent_framework import Agent
-from agent_framework.openai import OpenAIChatClient
-from agent_framework.orchestrations import GroupChatBuilder, RoundRobinGroupChatManager
+    import asyncio
+    from agent_framework import Agent
+    from agent_framework.openai import OpenAIChatClient
+    from agent_framework.orchestrations import GroupChatBuilder, RoundRobinGroupChatManager
 
-async def main():
-    client = OpenAIChatClient()
+    async def main():
+        client = OpenAIChatClient()
 
-    # Collaborative code review team
-    developer = Agent(client=client, name="developer",
-        instructions="You write clean, efficient Python code based on requirements. Show your implementation.")
-    
-    reviewer = Agent(client=client, name="reviewer",
-        instructions="You review code for bugs, security issues, and best practices. Be specific and constructive.")
-    
-    architect = Agent(client=client, name="architect",
-        instructions="You evaluate code architecture, scalability, and design patterns. Suggest improvements.")
+        # Collaborative code review team
+        developer = Agent(client=client, name="developer",
+            instructions="You write clean, efficient Python code based on requirements. Show your implementation.")
+        
+        reviewer = Agent(client=client, name="reviewer",
+            instructions="You review code for bugs, security issues, and best practices. Be specific and constructive.")
+        
+        architect = Agent(client=client, name="architect",
+            instructions="You evaluate code architecture, scalability, and design patterns. Suggest improvements.")
 
-    # Group chat with round-robin speaker selection
-    workflow = (
-        GroupChatBuilder(
-            participants=[developer, reviewer, architect],
-            manager=RoundRobinGroupChatManager(),
-            max_iterations=3,  # Each agent speaks 3 times max
+        # Group chat with round-robin speaker selection
+        workflow = (
+            GroupChatBuilder(
+                participants=[developer, reviewer, architect],
+                manager=RoundRobinGroupChatManager(),
+                max_iterations=3,  # Each agent speaks 3 times max
+            )
+            .build()
         )
-        .build()
-    )
 
-    task = "Write a Python class for a rate limiter that supports multiple rate limit rules."
-    
-    async for event in workflow.run(task, stream=True):
-        if event.type == "agent_response":
-            print(f"\n[{event.agent_name}]:\n{event.content}\n{'─'*60}")
+        task = "Write a Python class for a rate limiter that supports multiple rate limit rules."
+        
+        async for event in workflow.run(task, stream=True):
+            if event.type == "agent_response":
+                print(f"\n[{event.agent_name}]:\n{event.content}\n{'─'*60}")
 
-asyncio.run(main())
+    asyncio.run(main())
 ```
+
+**How it works step by step:**
+```markdown
+    Task → Manager decides: "Developer speaks first"
+     → Developer responds (everyone reads it)
+     → Manager decides: "Reviewer speaks next"
+     → Reviewer responds, referencing developer's output
+     → Manager decides: "Architect speaks next"
+     → Architect responds, building on both
+     → Repeat for max_iterations → Final result
+```
+
+1. The task is given to the group
+2. The manager (a coordinator — not a specialist) decides which agent speaks first
+3. That agent responds — their response is added to the shared conversation history
+4. All other agents can see that response
+5. The manager calls the next agent, who builds on what was already said
+6. This continues for a set number of rounds
+7. The result is the accumulated collaborative output of the whole group
+
+**When to use It:**
+Use Group Chat when the best answer requires genuine collaboration — when Agent B's contribution should be shaped by what Agent A said, and Agent C should synthesise both. Best for code review (write → review → improve), complex document drafting, multi-disciplinary analysis, or any task where the quality of the output improves when agents respond to each other rather than working in isolation.
+
+**When NOT to use It**
+Do not use Group Chat for simple tasks or when you just want independent opinions. If agents do not need to hear each other, Concurrent is faster and cleaner.
+
 
 #### Magentic (Magnetic) Orchestration
 
 **Description**: A **manager agent dynamically creates and manages a task list**, assigns sub-tasks to specialized agents, verifies results, and re-assigns if needed. Most powerful for complex, open-ended tasks requiring adaptive planning.
 
+
+A manager agent receives a complex goal, breaks it down into sub-tasks on its own, assigns each sub-task to the most appropriate specialist agent, checks the results, and re-assigns or adjusts if the result is not good enough. The plan is not written by you — the manager figures it out dynamically.
+
+
+**Real-world analogy:** Think of a project manager at a consulting firm who receives one big vague brief from a client: "Help us enter the Asian market." The project manager does not have a fixed playbook. They assess the brief, decide they need a market researcher, a legal expert, and a financial modeller, assign work to each one, review what comes back, send the researcher back to dig deeper on one country, ask the financial modeller to redo the numbers with new assumptions, and keep adjusting until the final deliverable is ready. No one told the project manager exactly what steps to follow — they figured it out themselves based on the goal.
+
+
 ```python
-import asyncio
-from agent_framework import Agent
-from agent_framework.openai import OpenAIChatClient
-from agent_framework.orchestrations import MagenticBuilder
+    import asyncio
+    from agent_framework import Agent
+    from agent_framework.openai import OpenAIChatClient
+    from agent_framework.orchestrations import MagenticBuilder
 
-async def main():
-    client = OpenAIChatClient()
+    async def main():
+        client = OpenAIChatClient()
 
-    # Specialized sub-agents for the Magentic team
-    web_surfer = Agent(client=client, name="web_surfer",
-        instructions="You search the web and summarize relevant findings.")
-    
-    code_writer = Agent(client=client, name="code_writer",
-        instructions="You write production-quality Python code.")
-    
-    data_analyst = Agent(client=client, name="data_analyst",
-        instructions="You analyze data and extract insights.")
-    
-    file_manager = Agent(client=client, name="file_manager",
-        instructions="You manage file operations and organize output.")
+        # Specialized sub-agents for the Magentic team
+        web_surfer = Agent(client=client, name="web_surfer",
+            instructions="You search the web and summarize relevant findings.")
+        
+        code_writer = Agent(client=client, name="code_writer",
+            instructions="You write production-quality Python code.")
+        
+        data_analyst = Agent(client=client, name="data_analyst",
+            instructions="You analyze data and extract insights.")
+        
+        file_manager = Agent(client=client, name="file_manager",
+            instructions="You manage file operations and organize output.")
 
-    # Magentic orchestrator — manager creates and manages tasks dynamically
-    workflow = (
-        MagenticBuilder(
-            participants=[web_surfer, code_writer, data_analyst, file_manager],
-            max_rounds=10,
+        # Magentic orchestrator — manager creates and manages tasks dynamically
+        workflow = (
+            MagenticBuilder(
+                participants=[web_surfer, code_writer, data_analyst, file_manager],
+                max_rounds=10,
+            )
+            .build()
         )
-        .build()
-    )
 
-    complex_task = """
-    Research the top 5 Python agent frameworks in 2026,
-    compare their features in a structured format,
-    and write a Python script that demonstrates 
-    creating an agent in each framework.
-    """
+        complex_task = """
+        Research the top 5 Python agent frameworks in 2026,
+        compare their features in a structured format,
+        and write a Python script that demonstrates 
+        creating an agent in each framework.
+        """
 
-    result = await workflow.run(complex_task)
-    print(result)
+        result = await workflow.run(complex_task)
+        print(result)
 
-asyncio.run(main())
+    asyncio.run(main())
 ```
+
+**How it works step by step:**
+```makdown
+    Complex Goal → [Manager Agent]
+                    │
+                    ├── Creates Task 1 → assigns to [Web Surfer] → reviews result
+                    ├── Creates Task 2 → assigns to [Data Analyst] → reviews result
+                    ├── Creates Task 3 → assigns to [Code Writer] → reviews result
+                    │        ↑
+                    │   "Not good enough — redo with these changes"
+                    │        │
+                    └── Re-assigns → [Code Writer] → reviews again → Final Result
+```
+
+1. You give the manager one complex, open-ended goal
+2. The manager reads it and decides what sub-tasks are needed — you do not specify these
+3. The manager assigns each sub-task to the most suitable specialist from the available pool
+4. Each specialist completes their task and returns the result to the manager
+5. The manager reviews the result — if it is good enough, it moves on; if not, it re-assigns with feedback
+6. This continues until the manager is satisfied that the overall goal is achieved
+7. The final synthesised result is returned
+
+**When to use It**
+Use Magentic when the task is genuinely complex, open-ended, and cannot be broken down into a fixed sequence of steps in advance — because you do not know upfront exactly what steps will be needed. Best for research and synthesis tasks, building things from scratch across multiple domains, or any goal where the path to the answer needs to be discovered rather than prescribed.
+
+**When NOT to use It:**
+Do not use Magentic for simple or predictable tasks. It is the most powerful pattern but also the most expensive and least predictable in terms of exactly what steps it will take. If you know the steps upfront, use Sequential. If you need control and auditability, use Sequential or Handoff.
+
+
+| Pattern | One-line summary |
+|---|---|
+| **Sequential** | Agents take turns in a fixed order, each building on the last |
+| **Concurrent** | All agents work simultaneously on the same input, independently |
+| **Handoff** | A receptionist agent routes to the right specialist based on the request |
+| **Group Chat** | Agents have a shared conversation, each building on what others said |
+| **Magentic** | A manager agent figures out the plan itself and coordinates specialists dynamically |
 
 ---
 
