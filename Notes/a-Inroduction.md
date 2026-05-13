@@ -779,8 +779,6 @@ skills/
 
 ### 2.10 CodeAct
 
-## CodeAct — Plain English, No Code
-
 ---
 
 #### The Problem It Solves
