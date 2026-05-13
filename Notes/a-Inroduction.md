@@ -1961,6 +1961,7 @@ async def timing_end_middleware(context, next):
 ```
 
 Both middlewares share data (`start_time`, `user_tier`) without putting any of it into the chat messages the user sees.
+
 ---
 
 ### 5.9 Running Context
