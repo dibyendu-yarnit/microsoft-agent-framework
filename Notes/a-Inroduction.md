@@ -479,43 +479,290 @@ asyncio.run(main())
 
 ### 2.9 Agent Skills
 
-**Description**: Agent Skills are **reusable, domain-specific knowledge modules** that agents can discover and use. Skills can be authored as files on disk, inline code, or encapsulated class libraries. They are like plug-and-play capability packages for agents.
+Imagine you hire a new employee. Instead of explaining everything from scratch every time they start a new task, you give them a **company handbook** they can look up whenever needed.
 
-**Why Important**: Skills enable agent capability composition without rewriting agent instructions. A single skill file (e.g., `python-best-practices.md`) becomes a queryable knowledge source.
+**Agent Skills are that handbook** — but for AI agents.
 
-**Skill Types**:
-- **File-based**: Markdown/text files with domain knowledge
-- **Code-based**: Python functions exposed as skill endpoints
-- **Class-based**: Encapsulated skill providers
+Without skills, you either:
+- Stuff everything into the system prompt (bloated, hits token limits fast)
+- Rewrite agent instructions for every new domain (repetitive, unmaintainable)
 
-**Example**:
+With skills, you write knowledge **once**, store it somewhere, and any agent can **discover and query it** on demand — only pulling in what it actually needs for the current task.
+
+---
+
+#### The Key Insight — "Discover and Use"
+
+Skills are **not** automatically injected into every prompt. The agent uses **semantic search** to find relevant skill content based on the current task. If the user asks about Python async code, the agent fetches the Python skills. If the user asks about API design, it fetches the API design skill. Irrelevant skills stay on the shelf.
+
+```
+User asks: "How should I handle async errors in Python?"
+                    ↓
+Agent searches skill library semantically
+                    ↓
+Finds: python-coding.md → fetches relevant section
+                    ↓
+Injects that section into context → answers with skill knowledge
+```
+
+---
+
+#### Skill Type 1 — File-Based Skills: (Markdown / Text files with domain knowledge)
+
+**What it is**: A plain `.md` or `.txt` file sitting on disk. You write domain knowledge in it once. The agent reads it when relevant.
+
+**Real-world analogy**: A printed style guide or coding standards document that a new developer reads when they need it — not memorised upfront, just referenced when the question comes up.
+
+**Example — skills/python-coding.md**:
+
+```markdown
+# Python Coding Best Practices
+
+## Async / Await
+- Always use `async def` for functions that call external APIs
+- Never use `time.sleep()` in async code — use `await asyncio.sleep()`
+- Wrap all async operations in try/except for TimeoutError
+
+## Error Handling
+- Use specific exceptions, never bare `except:`
+- Always log the original exception with `raise ... from e`
+
+## Type Hints
+- All function signatures must have type hints
+- Use `Optional[str]` not `str | None` for Python < 3.10
+```
+
+
+**Example — skills/shopify-domain.md**:
+
+```markdown
+# Shopify Domain Knowledge
+
+## Key Concepts
+- A "variant" is a specific version of a product (size, colour)
+- "Metafields" store custom data not in the default Shopify schema
+- Orders have 5 states: pending, open, closed, cancelled, any
+
+## Common Pitfalls
+- The Shopify API rate limit is 2 requests/second on Basic plan
+- Inventory is tracked at the variant level, NOT the product level
+- Discount codes are case-insensitive but stored uppercase
+```
+
+**How the agent uses it**:
 
 ```python
-import asyncio
-from agent_framework import Agent
-from agent_framework.openai import OpenAIChatClient
-from agent_framework.skills import FileSkillProvider, SkillSet
+    from agent_framework import Agent
+    from agent_framework.openai import OpenAIChatClient
+    from agent_framework.skills import FileSkillProvider, SkillSet
 
-async def main():
-    # Create a skill from a markdown file
-    skill_provider = FileSkillProvider(
-        skills_dir="./skills/",   # Directory containing .md skill files
-        # e.g., skills/python-coding.md, skills/data-analysis.md
+    # Point at a folder of .md files
+    skill_provider = FileSkillProvider(skills_dir="./skills/")
+
+    agent = Agent(
+        client=OpenAIChatClient(),
+        name="DevAssistant",
+        instructions="You are a senior developer. Use your skills to answer questions.",
+        skill_set=SkillSet(providers=[skill_provider]),
+    )
+
+    # Agent searches skills/python-coding.md automatically
+    result = await agent.run("What's wrong with using time.sleep() in async code?")
+    # Agent pulls the relevant section and answers correctly
+```
+
+**When to use**: Domain knowledge, coding standards, company policies, brand guidelines, product documentation — anything that is reference material, not executable logic.
+
+---
+
+#### Skill Type 2 — Code-Based Skills: (Python functions exposed as skill endpoints)
+
+**What it is**: A Python function that the agent can call to get dynamic, computed knowledge — not static text, but live data or calculations.
+
+**Real-world analogy**: Instead of a printed price list (file-based), this is a live pricing calculator that always returns the current price. The "skill" is the ability to calculate, not a fixed piece of text.
+
+**The difference from a Tool**: Tools **take actions** (send email, write to DB). Code-based skills **provide knowledge** (tell me the formula, compute this, explain this concept). Skills inform. Tools act.
+
+```python
+    # skills/pricing_skill.py
+
+    def get_pricing_rules(product_category: str) -> str:
+        """
+        Skill: Returns the pricing logic for a given product category.
+        Agents call this to understand HOW to price, not to set prices.
+        """
+        rules = {
+            "electronics": (
+                "Electronics are priced at cost × 1.4 (40% margin). "
+                "Apply 10% discount for quantities over 50 units. "
+                "Never go below cost × 1.15 — that is the floor."
+            ),
+            "apparel": (
+                "Apparel uses cost × 2.2 (120% margin). "
+                "Seasonal items get 30% discount in the last month of season. "
+                "Premium lines (branded) never discount more than 15%."
+            ),
+        }
+        return rules.get(product_category, "No specific rules. Use standard 35% margin.")
+
+
+    def get_tax_guidelines(country: str) -> str:
+        """
+        Skill: Returns tax handling rules for a country.
+        """
+        guidelines = {
+            "UK":  "Apply 20% VAT. Display prices inclusive of VAT on storefront.",
+            "USA": "Tax is state-dependent. Never include tax in listed price.",
+            "IN":  "Apply 18% GST for most goods. Food items: 5% GST.",
+        }
+        return guidelines.get(country, "Consult local tax regulations.")
+```
+
+```python
+    from agent_framework.skills import CodeSkillProvider, SkillSet
+
+    # Register the functions as skill endpoints
+    skill_provider = CodeSkillProvider(
+        skill_functions=[get_pricing_rules, get_tax_guidelines]
     )
 
     agent = Agent(
         client=OpenAIChatClient(),
-        name="SkillfulAgent",
-        instructions="You are an expert developer. Use your skills to help users.",
+        name="PricingAgent",
+        instructions="You are a pricing specialist. Use skills to apply correct rules.",
         skill_set=SkillSet(providers=[skill_provider]),
     )
 
-    # Agent automatically retrieves relevant skill content
-    result = await agent.run("What are the best practices for Python async programming?")
-    print(result)
-
-asyncio.run(main())
+    result = await agent.run(
+        "A UK customer wants to buy 60 units of electronics at £50 cost each. "
+        "What should the final price be?"
+    )
+    # Agent calls get_pricing_rules("electronics") → gets the formula
+    # Agent calls get_tax_guidelines("UK") → gets VAT rules
+    # Combines both and calculates: £50 × 1.4 = £70, minus 10% bulk = £63, plus 20% VAT = £75.60
 ```
+
+**When to use**: When the knowledge needs to be computed, looked up from a live source, or parameterised by input. Pricing rules, eligibility checks, formula lookups, conditional policies.
+
+---
+
+#### Skill Type 3 — Class-Based Skills: (Encapsulated skill providers)
+
+**What it is**: A Python class that bundles multiple related skills together into one reusable, importable package. Think of it as a skill **library** rather than a single skill file.
+
+**Real-world analogy**: A specialist consultant firm. Instead of hiring one person who knows one thing (file-based skill) or one calculator (code-based skill), you bring in a whole consulting firm (class-based skill) that has multiple experts, a database, and structured methodology — all bundled together.
+
+**Why use a class**: When your skills are complex enough to need their own state, configuration, or multiple related methods that belong together logically.
+
+```python
+    # skills/ecommerce_skill_provider.py
+
+    class EcommerceSkillProvider:
+        """
+        A bundled skill library covering all ecommerce domain knowledge.
+        One class — multiple skills — imported anywhere.
+        """
+
+        def __init__(self, store_type: str = "shopify"):
+            self.store_type = store_type
+            # Could load from DB, config file, or API on init
+            self._policies = self._load_policies()
+
+        def _load_policies(self) -> dict:
+            return {
+                "return_window_days": 30,
+                "free_shipping_threshold": 50.0,
+                "max_discount_percent": 40,
+            }
+
+        def get_return_policy(self, product_type: str) -> str:
+            """Skill: Explains the return policy for a product type."""
+            window = self._policies["return_window_days"]
+            exceptions = {
+                "digital": "Digital products are non-refundable once downloaded.",
+                "perishable": "Perishable goods cannot be returned.",
+                "custom": "Custom/personalised items cannot be returned.",
+            }
+            if product_type in exceptions:
+                return exceptions[product_type]
+            return (
+                f"Standard return window is {window} days from delivery. "
+                f"Item must be unused and in original packaging. "
+                f"Refund processed within 5-7 business days."
+            )
+
+        def get_shipping_rules(self, order_value: float, destination: str) -> str:
+            """Skill: Returns shipping cost rules based on order and destination."""
+            threshold = self._policies["free_shipping_threshold"]
+            if order_value >= threshold:
+                return f"Order qualifies for FREE shipping (over £{threshold})."
+            rates = {"UK": "£3.99 standard (3-5 days), £7.99 express (next day)",
+                    "EU": "£9.99 standard (5-10 days)",
+                    "USA": "£14.99 standard (7-14 days)"}
+            return rates.get(destination, "£19.99 international standard shipping.")
+
+        def get_discount_guardrails(self) -> str:
+            """Skill: Explains what discounts agents are allowed to offer."""
+            max_pct = self._policies["max_discount_percent"]
+            return (
+                f"Maximum discount is {max_pct}%. "
+                f"Never stack more than 2 discount codes. "
+                f"Loyalty members get an additional 5% on top of any offer. "
+                f"Flash sales require manager approval for discounts over 25%."
+            )
+```
+
+```python
+    from agent_framework.skills import ClassSkillProvider, SkillSet
+
+    # Instantiate the class — it carries its own state and config
+    ecommerce_skills = EcommerceSkillProvider(store_type="shopify")
+
+    skill_provider = ClassSkillProvider(skill_class=ecommerce_skills)
+
+    agent = Agent(
+        client=OpenAIChatClient(),
+        name="CustomerServiceAgent",
+        instructions=(
+            "You are a customer service agent for an online store. "
+            "Use your skills to give accurate, policy-compliant answers."
+        ),
+        skill_set=SkillSet(providers=[skill_provider]),
+    )
+
+    # Test 1 — return policy question
+    r1 = await agent.run("Can I return a custom-engraved watch I ordered last week?")
+    # Agent fetches get_return_policy("custom") → "Custom items cannot be returned."
+
+    # Test 2 — shipping question
+    r2 = await agent.run("My order is £45. How much is shipping to the UK?")
+    # Agent fetches get_shipping_rules(45.0, "UK") → shows £3.99 standard rate
+
+    # Test 3 — discount question
+    r3 = await agent.run("Can I give this customer 50% off to keep them happy?")
+    # Agent fetches get_discount_guardrails() → "Max 40%. Manager approval needed over 25%."
+```
+
+**When to use**: When you have 5+ related skills that share configuration, state, or belong to the same business domain. Build a class, import it anywhere, reuse across multiple agents.
+
+---
+
+**All Three Types — Side by Side**
+
+| | File-Based | Code-Based | Class-Based |
+|---|---|---|---|
+| **Format** | `.md` / `.txt` file | Python function | Python class |
+| **Knowledge type** | Static text, reference | Dynamic, computed | Structured, stateful |
+| **Best for** | Docs, standards, policies | Formulas, live lookups | Full domain bundles |
+| **Reusability** | Copy the file | Import the function | Import the class |
+| **Example** | `python-best-practices.md` | `get_pricing_rules()` | `EcommerceSkillProvider` |
+| **Analogy** | Employee handbook | Live calculator | Consulting firm |
+
+---
+
+**One-Paragraph Summary:**
+
+Agent Skills are reusable knowledge packages that agents query on demand using semantic search — they only pull in what is relevant to the current task, rather than bloating every prompt with everything upfront. File-based skills are the simplest — just Markdown files of domain knowledge that read like reference docs. Code-based skills are functions that compute or look up dynamic knowledge with parameters. Class-based skills bundle many related skills into one reusable package with shared state and config. All three serve the same goal: write your domain knowledge once, in the right form, and let any agent discover and use it without you rewriting instructions every time the domain changes.
 
 **Skills Directory Structure**:
 ```
